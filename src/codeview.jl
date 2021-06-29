@@ -72,53 +72,65 @@ function is_type_unstable(code::Union{IRCode, CodeInfo}, idx::Int, used::BitSet)
 end
 
 cthulhu_warntype(args...) = cthulhu_warntype(stdout, args...)
-function cthulhu_warntype(io::IO, src, rettype, debuginfo, stable_code)
-    debuginfo = IRShow.debuginfo(debuginfo)
-    lineprinter = __debuginfo[debuginfo]
-    lambda_io::IOContext = io
-    if hasfield(typeof(src), :slotnames) && src.slotnames !== nothing
-        slotnames = Base.sourceinfo_slotnames(src)
-        lambda_io = IOContext(lambda_io, :SOURCE_SLOTNAMES => slotnames)
-        show_variables(io, src, slotnames)
+function cthulhu_warntype(io::IO, src, rettype, debuginfo, stable_code, inline_cost=false)
+    if inline_cost
+        error("Need a MethodInstance to show inlining costs. Call `cthulhu_typed` directly instead.")
     end
-    print(io, "Body")
-    InteractiveUtils.warntype_type_printer(io, rettype, true)
-    println(io)
-
-    should_print_stmt = (src isa IRCode || stable_code) ? Returns(true) : is_type_unstable
-    bb_color = (src isa IRCode && debuginfo === :compact) ? :normal : :light_black
-    irshow_config = IRShowConfig(
-        lineprinter(src), InteractiveUtils.warntype_type_printer;
-        should_print_stmt, bb_color,
-    )
-    show_ir(io, src, irshow_config)
+    cthulu_typed(io, debuginfo, src, rettype, nothing, true, stable_code, inline_cost)
     return nothing
 end
 
-
-function cthulu_typed(io::IO, debuginfo, src, rt, mi, iswarn, stable_code)
+function cthulu_typed(io::IO, debuginfo, src, rt, mi, iswarn, stable_code, inline_cost=false)
     debuginfo = IRShow.debuginfo(debuginfo)
     lineprinter = __debuginfo[debuginfo]
     rettype = ignorelimited(rt)
+    lambda_io::IOContext = io
 
     if isa(src, Core.CodeInfo)
         # we're working on pre-optimization state, need to ignore `LimitedAccuracy`
         src = copy(src)
         src.ssavaluetypes = ignorelimited.(src.ssavaluetypes::Vector{Any})
         src.rettype = ignorelimited(src.rettype)
-    end
 
-    println(io)
-    println(io, "│ ─ $(string(Callsite(-1, MICallInfo(mi, rettype), :invoke)))")
+        if src.slotnames !== nothing
+            slotnames = Base.sourceinfo_slotnames(src)
+            lambda_io = IOContext(lambda_io, :SOURCE_SLOTNAMES => slotnames)
+            iswarn && show_variables(io, src, slotnames)
+        end
+    end
 
     if iswarn
-        cthulhu_warntype(io, src, rettype, debuginfo, stable_code)
+        print(io, "Body")
+        InteractiveUtils.warntype_type_printer(io, rettype, true)
+        println(io)
     else
-        bb_color = (src isa IRCode && debuginfo === :compact) ? :normal : :light_black
-        irshow_config = IRShowConfig(lineprinter(src); bb_color)
-        show_ir(io, src, irshow_config)
+        println(io, "│ ─ $(string(Callsite(-1, MICallInfo(mi, rettype), :invoke)))")
     end
-    println(io)
+
+    if src isa IRCode && inline_cost
+        code = src isa IRCode ? src.stmts.inst : src.code
+        cst = Vector{Int}(undef, length(code))
+        params = Core.Compiler.OptimizationParams(Core.Compiler.NativeInterpreter())
+        maxcost = Core.Compiler.statement_costs!(cst, code, src, Any[mi.sparam_vals...], false, params)
+        nd = ndigits(maxcost)
+        _lineprinter = lineprinter(src)
+        function preprinter(io, linestart, idx)
+            str = idx > 0 ? lpad(cst[idx], nd+1) : " "^(nd+1)
+            str = sprint(io -> Base.printstyled(io, str; color=:green); context=:color=>true)
+            return str * _lineprinter(io, linestart, idx)
+        end
+    else
+        preprinter = lineprinter(src)
+    end
+    postprinter = iswarn ? InteractiveUtils.warntype_type_printer : IRShow.default_expr_type_printer
+
+    should_print_stmt = (iswarn || src isa IRCode || stable_code) ? Returns(true) : is_type_unstable
+    bb_color = (src isa IRCode && debuginfo === :compact) ? :normal : :light_black
+
+    irshow_config = IRShowConfig(preprinter, postprinter; should_print_stmt, bb_color)
+
+    show_ir(io, src, irshow_config)
+    return nothing
 end
 
 function show_variables(io, src, slotnames)

@@ -199,7 +199,7 @@ using .DInfo: DebugInfo
 # src/reflection.jl has the tools to discover methods
 # src/ui.jl provides the user facing interface to which _descend responds
 ##
-function _descend(interp::CthulhuInterpreter, mi::MethodInstance; override::Union{Nothing, InferenceResult} = nothing, iswarn::Bool, params=current_params(), optimize::Bool=true, interruptexc::Bool=true, verbose=true, kwargs...)
+function _descend(interp::CthulhuInterpreter, mi::MethodInstance; override::Union{Nothing, InferenceResult} = nothing, iswarn::Bool, params=current_params(), optimize::Bool=true, interruptexc::Bool=true, verbose=true, inline_cost::Bool=false, kwargs...)
     debuginfo = DInfo.compact # default is compact debuginfo
     if :debuginfo in keys(kwargs)
         selected = kwargs[:debuginfo]
@@ -244,7 +244,7 @@ function _descend(interp::CthulhuInterpreter, mi::MethodInstance; override::Unio
             preprocess_ci!(codeinf, mi, optimize, CONFIG)
             callsites = find_callsites(interp, codeinf, infos, mi, slottypes, optimize; params, kwargs...)
 
-            display_CI && cthulu_typed(stdout, debuginfo_key, codeinf, rt, mi, iswarn, verbose)
+            display_CI && cthulu_typed(stdout, debuginfo_key, codeinf, rt, mi, iswarn, verbose, inline_cost)
             display_CI = true
         end
 
@@ -327,6 +327,8 @@ function _descend(interp::CthulhuInterpreter, mi::MethodInstance; override::Unio
             continue
         elseif toggle === :debuginfo
             debuginfo = DebugInfo((Int(debuginfo) + 1) % 3)
+        elseif toggle === :inline_cost
+            inline_cost ⊻= true
         elseif toggle === :highlighter
             CONFIG.enable_highlighter ⊻= true
             if CONFIG.enable_highlighter
